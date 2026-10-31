@@ -37,6 +37,8 @@ def verdict: if . == "supported" or . == "disputed" or . == "refuted" or . == "u
    progress: {round: $round, maxRounds: $max, supported: $s, disputed: $d, refuted: ($refuted | length),
               unverifiable: $u, pending: $p, coverage: ($R.coverage // null), sufficient: $suff,
               failedTurns: $fails, done: ($gate or $abort),
+              researchOkRounds: (($in.prev.researchOkRounds // 0) + (if $in.researchOk == true then 1 else 0 end)),
+              reviewOkRounds: (($in.prev.reviewOkRounds // 0) + (if $rok then 1 else 0 end)),
               outcome: (if $gate then "verified" elif $abort then "degraded" else "in_progress" end),
               phase: (if ($gate or $abort or $round >= $max) then "writing" else "researching" end),
               researcher: $in.prev.researcher, reviewer: $in.prev.reviewer}}

@@ -6,7 +6,15 @@ def link: "[source](" + . + ")";
 | ($claims | map(select(.status == "disputed"))) as $dis
 | ($in.ledger.refuted // [] | arr) as $ref
 | ($in.progress // {}) as $p
-| (if $p.outcome == "verified" then "verified" elif $p.outcome == "degraded" then "degraded" else "partially verified" end) as $status
+| (if ($p.researchOkRounds // 0) == 0 then "failed"
+   elif ($p.reviewOkRounds // 0) == 0 then "unreviewed"
+   elif ($sup | length) + ($dis | length) == 0 then "no findings"
+   elif $p.outcome == "verified" then "verified"
+   elif $p.outcome == "degraded" then "degraded"
+   else "partially verified" end) as $status
+| ({"failed": "the researcher's model failed in every round",
+    "unreviewed": "the reviewer's model failed, so no claim was checked",
+    "no findings": "no claim survived review"}[$status] // null) as $reason
 | ([ $sup[], $dis[] | .sources // [] | arr | .[] ] | unique) as $sources
 | (if $in.sectionOk == true and ($in.section | type) == "string" and ($in.section | length) > 200 then $in.section
    else "### Key findings\n\n"
@@ -16,7 +24,7 @@ def link: "[source](" + . + ")";
            else "" end)
    end) as $body
 | {areaIndex: $in.areaIndex, title: $in.title, researcher: $in.researcher, reviewer: $in.reviewer,
-   rounds: ($p.round // 0), status: $status,
+   rounds: ($p.round // 0), status: $status, reason: $reason,
    stats: {supported: ($sup | length), disputed: ($dis | length), refuted: ($ref | length),
            unverifiable: ($claims | map(select(.status == "unverifiable")) | length)},
    sectionMarkdown: $body,
