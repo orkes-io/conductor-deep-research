@@ -1,0 +1,201 @@
+{
+  "name": "deep_research",
+  "description": "Deep research with a team of agents. A planner splits the goal into areas, one research_area workflow per area runs in parallel with a researcher and a reviewer from different providers, and an editor writes the report that becomes a PDF.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "deep-research@example.com",
+  "timeoutSeconds": 10800,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": [
+    "topic",
+    "goal",
+    "audience",
+    "numAreas",
+    "minIterations",
+    "maxIterations",
+    "models",
+    "planner",
+    "writer",
+    "requestedAt"
+  ],
+  "tasks": [
+    {
+      "name": "normalize_input",
+      "taskReferenceName": "normalize_input",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "in": "${workflow.input}",
+        "queryExpression": "def num($d): if . == null then $d else (try tonumber catch $d) end;\ndef clamp($lo; $hi): if . < $lo then $lo elif . > $hi then $hi else . end;\ndef int: tostring | split(\".\") | .[0] | tonumber;\n.in as $i\n| ($i.maxIterations | num(3) | int | clamp(1; 6)) as $max\n| ($i.models // [] | if type == \"array\" then . else [] end) as $m\n| {topic: ($i.topic // \"\" | tostring | .[0:300]),\n   goal: ($i.goal // $i.topic // \"\" | tostring | .[0:2000]),\n   audience: ($i.audience // \"a decision-maker who needs a sourced briefing\" | tostring | .[0:200]),\n   requestedAt: ($i.requestedAt // null),\n   numAreas: ($i.numAreas | num(4) | int | clamp(1; 30)),\n   minIterations: ($i.minIterations | num(2) | int | clamp(1; $max)),\n   maxIterations: $max,\n   models: $m,\n   planner: ($i.planner // $m[0]),\n   writer: ($i.writer // $m[1] // $m[0]),\n   hasModels: (if ($m | length) > 0 then \"yes\" else \"no\" end)}"
+      }
+    },
+    {
+      "name": "deep_research_llm",
+      "taskReferenceName": "plan_areas",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${normalize_input.output.result.planner.llmProvider}",
+        "model": "${normalize_input.output.result.planner.model}",
+        "reasoningEffort": "${normalize_input.output.result.planner.reasoningEffort}",
+        "jsonOutput": true,
+        "maxTokens": 8000,
+        "messages": [
+          {
+            "role": "system",
+            "message": "You plan the work for a team of AI research agents. Each agent researches one area in parallel with live web search.\n\nSplit the topic and goal into exactly the number of research areas you are given. Together the areas must cover what the goal needs, and no two areas may overlap.\n\nEvery area must be answerable from public web sources. Prefer concrete angles such as costs, data, regulation, technology, vendors, risks, case studies and forecasts over broad themes.\n\nFor each area, write:\n- \"title\": 8 words or fewer\n- \"focus\": 1 or 2 sentences on what is in scope and what is not\n- \"questions\": 3 to 5 specific questions that name the entities, metrics or time ranges to find\n\nReply with JSON only, in this shape:\n{\"areas\": [{\"title\": \"\", \"focus\": \"\", \"questions\": [\"\"]}]}"
+          },
+          {
+            "role": "user",
+            "message": "TOPIC: ${normalize_input.output.result.topic}\nGOAL: ${normalize_input.output.result.goal}\nAUDIENCE: ${normalize_input.output.result.audience}\nNUMBER OF AREAS: ${normalize_input.output.result.numAreas}\nReturn the JSON object now."
+          }
+        ]
+      }
+    },
+    {
+      "name": "prepare_fanout",
+      "taskReferenceName": "prepare_fanout",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "cfg": "${normalize_input.output.result}",
+        "plan": "${plan_areas.output.result}",
+        "runId": "${workflow.workflowId}",
+        "queryExpression": "def arr: if type == \"array\" then . else [] end;\n. as $root | $root.cfg as $c | ($c.models | arr) as $m | ($m | length) as $n\n| (if ($root.plan | type) == \"object\" then ($root.plan.areas // $root.plan.researchAreas // [] | arr) else [] end) as $raw\n| ([ $raw[] | select(type == \"object\") | select(((.title // \"\") | length) > 0) ] | .[0:$c.numAreas]) as $areas\n| ($areas | map(.title)) as $titles\n| (if $n == 0 then [] else\n   [ $areas | to_entries[] | .key as $i | .value as $a | $m[$i % $n] as $res\n     | ([ range(1; $n) as $k | $m[($i + $k) % $n] | select(.kind != $res.kind) ] | .[0] // $m[($i + 1) % $n]) as $rev\n     | {runId: $root.runId, topic: $c.topic, goal: $c.goal, audience: $c.audience, areaIndex: $i,\n        area: {title: $a.title, focus: ($a.focus // \"\"), questions: ($a.questions // [] | arr | map(tostring) | .[0:5])},\n        otherAreasText: ($titles | map(select(. != $a.title)) | join(\"; \")),\n        researcher: $res, reviewer: $rev,\n        minIterations: $c.minIterations, maxIterations: $c.maxIterations} ]\n   end) as $inputs\n| {forkInputs: $inputs, count: ($inputs | length),\n   hasAreas: (if ($inputs | length) > 0 then \"yes\" else \"no\" end),\n   plan: ($inputs | map({areaIndex, title: .area.title, researcher: .researcher.label, reviewer: .reviewer.label}))}"
+      }
+    },
+    {
+      "name": "check_plan",
+      "taskReferenceName": "check_plan",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "hasAreas",
+      "inputParameters": {
+        "hasAreas": "${prepare_fanout.output.result.hasAreas}"
+      },
+      "decisionCases": {
+        "no": [
+          {
+            "name": "fail_no_plan",
+            "taskReferenceName": "fail_no_plan",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "FAILED",
+              "terminationReason": "The planner returned no usable research areas",
+              "workflowOutput": {
+                "plan": "${plan_areas.output.result}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "research_fanout",
+      "taskReferenceName": "research_fanout",
+      "type": "FORK_JOIN_DYNAMIC",
+      "optional": true,
+      "inputParameters": {
+        "forkTaskWorkflow": "research_area",
+        "forkTaskWorkflowVersion": "1",
+        "forkTaskInputs": "${prepare_fanout.output.result.forkInputs}"
+      }
+    },
+    {
+      "name": "research_join",
+      "taskReferenceName": "research_join",
+      "type": "JOIN",
+      "joinOn": []
+    },
+    {
+      "name": "collect_findings",
+      "taskReferenceName": "collect_findings",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "joined": "${research_join.output}",
+        "planned": "${prepare_fanout.output.result.plan}",
+        "queryExpression": "def arr: if type == \"array\" then . else [] end;\ndef n: if type == \"number\" then . else 0 end;\n. as $root\n| ([ ($root.joined // {}) | to_entries[] | .value | select(type == \"object\") | .report | select(type == \"object\") ]\n   | sort_by(.areaIndex)) as $done\n| ($done | map(.areaIndex)) as $ok\n| [ ($root.planned // [] | arr)[] | . as $p | select(($ok | map(select(. == $p.areaIndex)) | length) == 0) ] as $missing\n| {rounds: ([ $done[] | .rounds | n ] | add // 0),\n   supported: ([ $done[] | .stats.supported | n ] | add // 0),\n   disputed: ([ $done[] | .stats.disputed | n ] | add // 0),\n   refuted: ([ $done[] | .stats.refuted | n ] | add // 0)} as $t\n| {areas: $done, missing: $missing, completedCount: ($done | length),\n   hasResults: (if ($done | length) > 0 then \"yes\" else \"no\" end),\n   totals: ($t + {areas: ($done | length), planned: ($root.planned // [] | arr | length)}),\n   missingText: (if ($missing | length) == 0 then \"none\" else ($missing | map(.title) | join(\"; \")) end),\n   totalsText: (($done | length | tostring) + \" of \" + ($root.planned // [] | arr | length | tostring) + \" areas completed, \"\n                + ($t.rounds | tostring) + \" review rounds, \" + ($t.supported | tostring) + \" supported claims, \"\n                + ($t.disputed | tostring) + \" disputed and \" + ($t.refuted | tostring) + \" refuted\"),\n   digest: ($done | map({title, researcher: .researcher.label, reviewer: .reviewer.label, status, stats,\n                         section: (.sectionMarkdown // \"\" | .[0:6000])}) | tojson)}"
+      }
+    },
+    {
+      "name": "check_results",
+      "taskReferenceName": "check_results",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "hasResults",
+      "inputParameters": {
+        "hasResults": "${collect_findings.output.result.hasResults}"
+      },
+      "decisionCases": {
+        "no": [
+          {
+            "name": "fail_no_results",
+            "taskReferenceName": "fail_no_results",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "FAILED",
+              "terminationReason": "No research area completed",
+              "workflowOutput": {
+                "missing": "${collect_findings.output.result.missing}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "deep_research_llm",
+      "taskReferenceName": "write_synthesis",
+      "type": "LLM_CHAT_COMPLETE",
+      "optional": true,
+      "inputParameters": {
+        "llmProvider": "${normalize_input.output.result.writer.llmProvider}",
+        "model": "${normalize_input.output.result.writer.model}",
+        "reasoningEffort": "${normalize_input.output.result.writer.reasoningEffort}",
+        "maxTokens": 16000,
+        "messages": [
+          {
+            "role": "system",
+            "message": "You are the lead editor of a report written by a team of AI research agents. One model researched each area, and a model from a different company fact-checked it.\n\nWrite these markdown sections for the reader described as AUDIENCE:\n- \"## Executive summary\": one paragraph, then 5 to 8 bullet points that answer the GOAL\n- \"## Cross-cutting insights\"\n- \"## Where the evidence conflicts\"\n- \"## Confidence and limitations\": name every area that didn't complete, word for word, and every area that was only partly verified\n- \"## Recommended next steps\"\n\nUse only facts from the area reports, and keep their links. Write 900 to 1,500 words with no tables. Don't repeat the area sections, because they are added after your text."
+          },
+          {
+            "role": "user",
+            "message": "TOPIC: ${normalize_input.output.result.topic}\nGOAL: ${normalize_input.output.result.goal}\nAUDIENCE: ${normalize_input.output.result.audience}\nRUN TOTALS: ${collect_findings.output.result.totalsText}\nAREAS THAT DID NOT COMPLETE: ${collect_findings.output.result.missingText}\nAREA REPORTS (JSON array):\n${collect_findings.output.result.digest}"
+          }
+        ]
+      }
+    },
+    {
+      "name": "assemble_report",
+      "taskReferenceName": "assemble_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "cfg": "${normalize_input.output.result}",
+        "collected": "${collect_findings.output.result}",
+        "runId": "${workflow.workflowId}",
+        "synthesis": "${write_synthesis.output.result}",
+        "queryExpression": "def arr: if type == \"array\" then . else [] end;\ndef s: if . == null then \"\" else tostring end;\n. as $in | $in.cfg as $c | $in.collected as $col\n| ($col.areas // [] | arr) as $areas\n| ([ $areas[] | .sources // [] | arr | .[] ] | unique) as $sources\n| (if ($in.synthesis | type) == \"string\" and ($in.synthesis | length) > 200 then $in.synthesis\n   else \"_The editor step didn't complete, so this report has no executive summary. The research sections below are complete._\" end) as $syn\n| ([ $areas[]\n     | \"## \" + ((.areaIndex + 1) | tostring) + \". \" + .title + \"\\n\\n\"\n       + \"_Researcher: \" + (.researcher.label | s) + \". Reviewer: \" + (.reviewer.label | s) + \". Rounds: \"\n       + (.rounds | s) + \". Status: \" + (.status | s) + \" (\" + (.stats.supported | s) + \" supported, \"\n       + (.stats.disputed | s) + \" disputed, \" + (.stats.refuted | s) + \" refuted)._\\n\\n\"\n       + (.sectionMarkdown | s) ] | join(\"\\n\\n\")) as $sections\n| (\"| # | Area | Researcher | Reviewer | Rounds | Supported | Disputed | Refuted | Status |\\n\"\n   + \"|---|---|---|---|---|---|---|---|---|\\n\"\n   + ([ $areas[] | \"| \" + ((.areaIndex + 1) | tostring) + \" | \" + (.title | s | gsub(\"\\\\|\"; \"/\")) + \" | \"\n          + (.researcher.label | s) + \" | \" + (.reviewer.label | s) + \" | \" + (.rounds | s) + \" | \"\n          + (.stats.supported | s) + \" | \" + (.stats.disputed | s) + \" | \" + (.stats.refuted | s) + \" | \"\n          + (.status | s) + \" |\" ] | join(\"\\n\"))) as $table\n| (\"# \" + $c.topic + \"\\n\\n\"\n   + \"**Goal:** \" + $c.goal + \"\\n\\n\"\n   + \"**Audience:** \" + $c.audience + \"\\n\\n\"\n   + \"_Run \" + ($in.runId | s) + (if $c.requestedAt then \", started \" + ($c.requestedAt | s) else \"\" end)\n   + \". \" + ($col.totalsText | s) + \"._\\n\\n\"\n   + $syn + \"\\n\\n\"\n   + \"# Findings by research area\\n\\n\" + $sections + \"\\n\\n\"\n   + \"# Methodology\\n\\n\"\n   + \"One model researched each area with live web search, and a model from a different provider tried to refute every claim. Refuted claims were revised or withdrawn in the next round.\\n\\n\"\n   + $table + \"\\n\\n\"\n   + \"Areas that did not complete: \" + ($col.missingText | s) + \".\\n\\n\"\n   + \"# Sources\\n\\n\"\n   + ([ range(0; $sources | length) as $k | (($k + 1) | tostring) + \". <\" + $sources[$k] + \">\" ] | join(\"\\n\"))) as $md\n| {markdown: $md, sourceCount: ($sources | length)}"
+      }
+    },
+    {
+      "name": "deep_research_render_pdf",
+      "taskReferenceName": "render_pdf",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "workflowId": "${workflow.workflowId}",
+        "title": "${normalize_input.output.result.topic}",
+        "markdown": "${assemble_report.output.result.markdown}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "topic": "${normalize_input.output.result.topic}",
+    "goal": "${normalize_input.output.result.goal}",
+    "plan": "${prepare_fanout.output.result.plan}",
+    "totals": "${collect_findings.output.result.totals}",
+    "missing": "${collect_findings.output.result.missing}",
+    "markdown": "${assemble_report.output.result.markdown}",
+    "sourceCount": "${assemble_report.output.result.sourceCount}",
+    "pdf": "${render_pdf.output}"
+  }
+}

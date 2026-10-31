@@ -1,0 +1,65 @@
+{
+  "name": "agent_turn",
+  "description": "One agent turn: build the prompt, make one LLM call (with provider web search when asked), and clean up the reply. It runs as its own workflow so that a DO_WHILE never feeds an LLM task its earlier replies.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "@include:owner",
+  "timeoutSeconds": 1800,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["role", "llmProvider", "model", "reasoningEffort", "system", "user", "context", "webSearch", "expectJson", "maxTokens"],
+  "tasks": [
+    {
+      "name": "compose_prompt",
+      "taskReferenceName": "compose",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "user": "${workflow.input.user}",
+        "context": "${workflow.input.context}",
+        "queryExpression": "@include:jq/compose.jq"
+      }
+    },
+    {
+      "name": "deep_research_llm",
+      "taskReferenceName": "llm",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llmProvider}",
+        "model": "${workflow.input.model}",
+        "reasoningEffort": "${workflow.input.reasoningEffort}",
+        "messages": [
+          {"role": "system", "message": "${workflow.input.system}"},
+          {"role": "user", "message": "${compose.output.result.text}"}
+        ],
+        "webSearch": "${workflow.input.webSearch}",
+        "jsonOutput": false,
+        "maxTokens": "${workflow.input.maxTokens}"
+      }
+    },
+    {
+      "name": "normalize_reply",
+      "taskReferenceName": "normalize",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "r": "${llm.output.result}",
+        "finishReason": "${llm.output.finishReason}",
+        "expectJson": "${workflow.input.expectJson}",
+        "usage": {
+          "promptTokens": "${llm.output.promptTokens}",
+          "completionTokens": "${llm.output.completionTokens}",
+          "totalTokens": "${llm.output.tokenUsed}"
+        },
+        "queryExpression": "@include:jq/normalize.jq"
+      }
+    }
+  ],
+  "outputParameters": {
+    "ok": "${normalize.output.result.ok}",
+    "data": "${normalize.output.result.data}",
+    "text": "${normalize.output.result.text}",
+    "truncated": "${normalize.output.result.truncated}",
+    "finishReason": "${normalize.output.result.finishReason}",
+    "usage": "${normalize.output.result.usage}",
+    "role": "${workflow.input.role}",
+    "model": "${workflow.input.model}"
+  }
+}

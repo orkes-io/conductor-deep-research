@@ -1,0 +1,12 @@
+{
+  "name": "deep_research_render_pdf",
+  "description": "Worker task: renders the final markdown report to a PDF next to the UI server",
+  "ownerEmail": "deep-research@example.com",
+  "retryCount": 2,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 10,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "timeoutSeconds": 3900,
+  "responseTimeoutSeconds": 300,
+  "pollTimeoutSeconds": 3600
+}

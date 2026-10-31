@@ -1,0 +1,12 @@
+{
+  "name": "deep_research_llm",
+  "description": "Retry and timeout policy for every LLM_CHAT_COMPLETE task in the deep research workflows",
+  "ownerEmail": "@include:owner",
+  "retryCount": 3,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 20,
+  "timeoutPolicy": "RETRY",
+  "timeoutSeconds": 900,
+  "responseTimeoutSeconds": 900,
+  "pollTimeoutSeconds": 3600
+}

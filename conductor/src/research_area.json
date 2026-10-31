@@ -1,0 +1,179 @@
+{
+  "name": "research_area",
+  "description": "One research agent. It researches one area with web search, and in every round a model from a different provider tries to refute each claim. It stops when the reviewer is satisfied or the round cap is reached, then writes its section of the report.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "@include:owner",
+  "timeoutSeconds": 7200,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["runId", "topic", "goal", "audience", "areaIndex", "area", "otherAreasText", "researcher", "reviewer", "minIterations", "maxIterations"],
+  "tasks": [
+    {
+      "name": "init_state",
+      "taskReferenceName": "init_state",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "ledger": {"claims": [], "refuted": [], "nextId": 1},
+        "feedback": {"gaps": [], "nextQueries": [], "challenges": [], "refutedThisRound": [], "critique": ""},
+        "progress": {
+          "round": 0,
+          "maxRounds": "${workflow.input.maxIterations}",
+          "supported": 0, "disputed": 0, "refuted": 0, "unverifiable": 0, "pending": 0,
+          "sufficient": false, "done": false, "failedTurns": 0,
+          "outcome": "in_progress", "phase": "researching",
+          "researcher": "${workflow.input.researcher.label}",
+          "reviewer": "${workflow.input.reviewer.label}"
+        }
+      }
+    },
+    {
+      "name": "adversarial_rounds",
+      "taskReferenceName": "rounds",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "inputParameters": {
+        "rounds": "${rounds.output}",
+        "maxIterations": "${workflow.input.maxIterations}",
+        "done": "${workflow.variables.progress.done}"
+      },
+      "loopCondition": "(function(){ return Number($.rounds['iteration']) < Number($.maxIterations) && $.done !== true; })();",
+      "loopOver": [
+        {
+          "name": "agent_turn",
+          "taskReferenceName": "research_turn",
+          "type": "SUB_WORKFLOW",
+          "optional": true,
+          "subWorkflowParam": {"name": "agent_turn", "version": 1},
+          "inputParameters": {
+            "role": "researcher",
+            "llmProvider": "${workflow.input.researcher.llmProvider}",
+            "model": "${workflow.input.researcher.model}",
+            "reasoningEffort": "${workflow.input.researcher.reasoningEffort}",
+            "webSearch": true,
+            "expectJson": true,
+            "maxTokens": 16000,
+            "system": "@include:prompts/researcher.md",
+            "user": "TOPIC: ${workflow.input.topic}\nGOAL: ${workflow.input.goal}\nAUDIENCE: ${workflow.input.audience}\nYOUR AREA: ${workflow.input.area.title}\nSCOPE: ${workflow.input.area.focus}\nOTHER AGENTS COVER THESE AREAS, SO SKIP THEM: ${workflow.input.otherAreasText}\nThis is round ${rounds.output.iteration} of at most ${workflow.input.maxIterations}. First revise or retract every claim in reviewerFeedback.challenges and reviewerFeedback.refutedThisRound, then add 3 to 8 new claims that answer keyQuestions and reviewerFeedback.gaps. Reply with the JSON object only.",
+            "context": {
+              "keyQuestions": "${workflow.input.area.questions}",
+              "ledger": "${workflow.variables.ledger.claims}",
+              "reviewerFeedback": "${workflow.variables.feedback}"
+            }
+          }
+        },
+        {
+          "name": "merge_claims",
+          "taskReferenceName": "merge_claims",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "ledger": "${workflow.variables.ledger}",
+            "turn": "${research_turn.output}",
+            "round": "${rounds.output.iteration}",
+            "queryExpression": "@include:jq/merge_claims.jq"
+          }
+        },
+        {
+          "name": "agent_turn",
+          "taskReferenceName": "review_turn",
+          "type": "SUB_WORKFLOW",
+          "optional": true,
+          "subWorkflowParam": {"name": "agent_turn", "version": 1},
+          "inputParameters": {
+            "role": "reviewer",
+            "llmProvider": "${workflow.input.reviewer.llmProvider}",
+            "model": "${workflow.input.reviewer.model}",
+            "reasoningEffort": "${workflow.input.reviewer.reasoningEffort}",
+            "webSearch": true,
+            "expectJson": true,
+            "maxTokens": 16000,
+            "system": "@include:prompts/reviewer.md",
+            "user": "TOPIC: ${workflow.input.topic}\nAREA UNDER REVIEW: ${workflow.input.area.title}\nSCOPE: ${workflow.input.area.focus}\nThis is round ${rounds.output.iteration} of at most ${workflow.input.maxIterations}, and at least ${workflow.input.minIterations} rounds will run. Review every claim in claimsToReview, then judge how well the supported claims answer keyQuestions. Reply with the JSON object only.",
+            "context": {
+              "keyQuestions": "${workflow.input.area.questions}",
+              "claimsToReview": "${merge_claims.output.result.reviewSet}",
+              "alreadySupported": "${merge_claims.output.result.supportedBrief}",
+              "researcherNote": "${merge_claims.output.result.researcherSummary}"
+            }
+          }
+        },
+        {
+          "name": "apply_review",
+          "taskReferenceName": "apply_review",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "ledger": "${merge_claims.output.result.ledger}",
+            "review": "${review_turn.output}",
+            "researchOk": "${merge_claims.output.result.researchOk}",
+            "round": "${rounds.output.iteration}",
+            "minIterations": "${workflow.input.minIterations}",
+            "maxIterations": "${workflow.input.maxIterations}",
+            "prev": "${workflow.variables.progress}",
+            "queryExpression": "@include:jq/apply_review.jq"
+          }
+        },
+        {
+          "name": "save_state",
+          "taskReferenceName": "save_state",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "ledger": "${apply_review.output.result.ledger}",
+            "feedback": "${apply_review.output.result.feedback}",
+            "progress": "${apply_review.output.result.progress}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent_turn",
+      "taskReferenceName": "section_turn",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {"name": "agent_turn", "version": 1},
+      "inputParameters": {
+        "role": "writer",
+        "llmProvider": "${workflow.input.researcher.llmProvider}",
+        "model": "${workflow.input.researcher.model}",
+        "reasoningEffort": "${workflow.input.researcher.reasoningEffort}",
+        "webSearch": false,
+        "expectJson": false,
+        "maxTokens": 12000,
+        "system": "@include:prompts/section.md",
+        "user": "TOPIC: ${workflow.input.topic}\nGOAL: ${workflow.input.goal}\nAUDIENCE: ${workflow.input.audience}\nAREA: ${workflow.input.area.title}\nWrite this area's section of the report from the claim ledger in CONTEXT.",
+        "context": {
+          "ledger": "${workflow.variables.ledger}",
+          "openGaps": "${workflow.variables.feedback.gaps}"
+        }
+      }
+    },
+    {
+      "name": "finalize_area",
+      "taskReferenceName": "finalize_area",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "areaIndex": "${workflow.input.areaIndex}",
+        "title": "${workflow.input.area.title}",
+        "researcher": "${workflow.input.researcher}",
+        "reviewer": "${workflow.input.reviewer}",
+        "ledger": "${workflow.variables.ledger}",
+        "feedback": "${workflow.variables.feedback}",
+        "progress": "${workflow.variables.progress}",
+        "section": "${section_turn.output.text}",
+        "sectionOk": "${section_turn.output.ok}",
+        "queryExpression": "@include:jq/finalize_area.jq"
+      }
+    },
+    {
+      "name": "mark_done",
+      "taskReferenceName": "mark_done",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "progress": "${finalize_area.output.result.progress}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "areaIndex": "${workflow.input.areaIndex}",
+    "title": "${workflow.input.area.title}",
+    "report": "${finalize_area.output.result}"
+  }
+}

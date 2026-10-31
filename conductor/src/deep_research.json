@@ -1,0 +1,170 @@
+{
+  "name": "deep_research",
+  "description": "Deep research with a team of agents. A planner splits the goal into areas, one research_area workflow per area runs in parallel with a researcher and a reviewer from different providers, and an editor writes the report that becomes a PDF.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "@include:owner",
+  "timeoutSeconds": 10800,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["topic", "goal", "audience", "numAreas", "minIterations", "maxIterations", "models", "planner", "writer", "requestedAt"],
+  "tasks": [
+    {
+      "name": "normalize_input",
+      "taskReferenceName": "normalize_input",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "in": "${workflow.input}",
+        "queryExpression": "@include:jq/normalize_input.jq"
+      }
+    },
+    {
+      "name": "deep_research_llm",
+      "taskReferenceName": "plan_areas",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${normalize_input.output.result.planner.llmProvider}",
+        "model": "${normalize_input.output.result.planner.model}",
+        "reasoningEffort": "${normalize_input.output.result.planner.reasoningEffort}",
+        "jsonOutput": true,
+        "maxTokens": 8000,
+        "messages": [
+          {"role": "system", "message": "@include:prompts/planner.md"},
+          {"role": "user", "message": "TOPIC: ${normalize_input.output.result.topic}\nGOAL: ${normalize_input.output.result.goal}\nAUDIENCE: ${normalize_input.output.result.audience}\nNUMBER OF AREAS: ${normalize_input.output.result.numAreas}\nReturn the JSON object now."}
+        ]
+      }
+    },
+    {
+      "name": "prepare_fanout",
+      "taskReferenceName": "prepare_fanout",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "cfg": "${normalize_input.output.result}",
+        "plan": "${plan_areas.output.result}",
+        "runId": "${workflow.workflowId}",
+        "queryExpression": "@include:jq/prepare_fanout.jq"
+      }
+    },
+    {
+      "name": "check_plan",
+      "taskReferenceName": "check_plan",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "hasAreas",
+      "inputParameters": {"hasAreas": "${prepare_fanout.output.result.hasAreas}"},
+      "decisionCases": {
+        "no": [
+          {
+            "name": "fail_no_plan",
+            "taskReferenceName": "fail_no_plan",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "FAILED",
+              "terminationReason": "The planner returned no usable research areas",
+              "workflowOutput": {"plan": "${plan_areas.output.result}"}
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "research_fanout",
+      "taskReferenceName": "research_fanout",
+      "type": "FORK_JOIN_DYNAMIC",
+      "optional": true,
+      "inputParameters": {
+        "forkTaskWorkflow": "research_area",
+        "forkTaskWorkflowVersion": "1",
+        "forkTaskInputs": "${prepare_fanout.output.result.forkInputs}"
+      }
+    },
+    {
+      "name": "research_join",
+      "taskReferenceName": "research_join",
+      "type": "JOIN",
+      "joinOn": []
+    },
+    {
+      "name": "collect_findings",
+      "taskReferenceName": "collect_findings",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "joined": "${research_join.output}",
+        "planned": "${prepare_fanout.output.result.plan}",
+        "queryExpression": "@include:jq/collect_findings.jq"
+      }
+    },
+    {
+      "name": "check_results",
+      "taskReferenceName": "check_results",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "hasResults",
+      "inputParameters": {"hasResults": "${collect_findings.output.result.hasResults}"},
+      "decisionCases": {
+        "no": [
+          {
+            "name": "fail_no_results",
+            "taskReferenceName": "fail_no_results",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "FAILED",
+              "terminationReason": "No research area completed",
+              "workflowOutput": {"missing": "${collect_findings.output.result.missing}"}
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "deep_research_llm",
+      "taskReferenceName": "write_synthesis",
+      "type": "LLM_CHAT_COMPLETE",
+      "optional": true,
+      "inputParameters": {
+        "llmProvider": "${normalize_input.output.result.writer.llmProvider}",
+        "model": "${normalize_input.output.result.writer.model}",
+        "reasoningEffort": "${normalize_input.output.result.writer.reasoningEffort}",
+        "maxTokens": 16000,
+        "messages": [
+          {"role": "system", "message": "@include:prompts/editor.md"},
+          {"role": "user", "message": "TOPIC: ${normalize_input.output.result.topic}\nGOAL: ${normalize_input.output.result.goal}\nAUDIENCE: ${normalize_input.output.result.audience}\nRUN TOTALS: ${collect_findings.output.result.totalsText}\nAREAS THAT DID NOT COMPLETE: ${collect_findings.output.result.missingText}\nAREA REPORTS (JSON array):\n${collect_findings.output.result.digest}"}
+        ]
+      }
+    },
+    {
+      "name": "assemble_report",
+      "taskReferenceName": "assemble_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "cfg": "${normalize_input.output.result}",
+        "collected": "${collect_findings.output.result}",
+        "runId": "${workflow.workflowId}",
+        "synthesis": "${write_synthesis.output.result}",
+        "queryExpression": "@include:jq/assemble_report.jq"
+      }
+    },
+    {
+      "name": "deep_research_render_pdf",
+      "taskReferenceName": "render_pdf",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "workflowId": "${workflow.workflowId}",
+        "title": "${normalize_input.output.result.topic}",
+        "markdown": "${assemble_report.output.result.markdown}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "topic": "${normalize_input.output.result.topic}",
+    "goal": "${normalize_input.output.result.goal}",
+    "plan": "${prepare_fanout.output.result.plan}",
+    "totals": "${collect_findings.output.result.totals}",
+    "missing": "${collect_findings.output.result.missing}",
+    "markdown": "${assemble_report.output.result.markdown}",
+    "sourceCount": "${assemble_report.output.result.sourceCount}",
+    "pdf": "${render_pdf.output}"
+  }
+}

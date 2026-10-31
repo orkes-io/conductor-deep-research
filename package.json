@@ -1,0 +1,36 @@
+{
+  "name": "conductor-deep-research",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A deep research agent on Conductor: researchers on three LLM providers work in parallel, check each other's claims, and an editor writes a PDF report. Includes a React UI.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "build:defs": "tsx scripts/build-defs.ts",
+    "register": "tsx --env-file=.env scripts/register.ts",
+    "dev": "tsx --env-file=.env server/index.ts",
+    "build": "vite build",
+    "start": "NODE_ENV=production tsx --env-file=.env server/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@io-orkes/conductor-javascript": "^4.0.0",
+    "express": "^5.3.0",
+    "marked": "^18.1.2",
+    "puppeteer": "^25.16.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}

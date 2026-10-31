@@ -1,0 +1,82 @@
+{
+  "name": "agent_turn",
+  "description": "One agent turn: build the prompt, make one LLM call (with provider web search when asked), and clean up the reply. It runs as its own workflow so that a DO_WHILE never feeds an LLM task its earlier replies.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "deep-research@example.com",
+  "timeoutSeconds": 1800,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": [
+    "role",
+    "llmProvider",
+    "model",
+    "reasoningEffort",
+    "system",
+    "user",
+    "context",
+    "webSearch",
+    "expectJson",
+    "maxTokens"
+  ],
+  "tasks": [
+    {
+      "name": "compose_prompt",
+      "taskReferenceName": "compose",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "user": "${workflow.input.user}",
+        "context": "${workflow.input.context}",
+        "queryExpression": "{text: (.user + (if .context == null then \"\" else \"\\n\\nCONTEXT (JSON):\\n\" + (.context | tojson) end))}"
+      }
+    },
+    {
+      "name": "deep_research_llm",
+      "taskReferenceName": "llm",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llmProvider}",
+        "model": "${workflow.input.model}",
+        "reasoningEffort": "${workflow.input.reasoningEffort}",
+        "messages": [
+          {
+            "role": "system",
+            "message": "${workflow.input.system}"
+          },
+          {
+            "role": "user",
+            "message": "${compose.output.result.text}"
+          }
+        ],
+        "webSearch": "${workflow.input.webSearch}",
+        "jsonOutput": false,
+        "maxTokens": "${workflow.input.maxTokens}"
+      }
+    },
+    {
+      "name": "normalize_reply",
+      "taskReferenceName": "normalize",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "r": "${llm.output.result}",
+        "finishReason": "${llm.output.finishReason}",
+        "expectJson": "${workflow.input.expectJson}",
+        "usage": {
+          "promptTokens": "${llm.output.promptTokens}",
+          "completionTokens": "${llm.output.completionTokens}",
+          "totalTokens": "${llm.output.tokenUsed}"
+        },
+        "queryExpression": "def clean: gsub(\"[\\r\\n\\t]+\"; \" \") | sub(\"^[^{]*\"; \"\") | sub(\"[^}]*$\"; \"\");\n.r as $r\n| (if ($r | type) == \"object\" then $r\n   elif ($r | type) == \"string\" then (try ($r | clean | fromjson) catch null)\n   else null end) as $obj\n| (if ($r | type) == \"string\" then $r elif $r == null then \"\" else ($r | tojson) end) as $txt\n| ((.finishReason // \"\") | ascii_upcase) as $fr\n| {ok: (if .expectJson == true then (($obj | type) == \"object\") else (($txt | length) > 0) end),\n   data: (if .expectJson == true and ($obj | type) == \"object\" then $obj else null end),\n   text: (if .expectJson == true then $txt[0:3000] else $txt end),\n   truncated: ($fr == \"LENGTH\" or $fr == \"MAX_TOKENS\"),\n   finishReason: $fr,\n   usage: .usage}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "ok": "${normalize.output.result.ok}",
+    "data": "${normalize.output.result.data}",
+    "text": "${normalize.output.result.text}",
+    "truncated": "${normalize.output.result.truncated}",
+    "finishReason": "${normalize.output.result.finishReason}",
+    "usage": "${normalize.output.result.usage}",
+    "role": "${workflow.input.role}",
+    "model": "${workflow.input.model}"
+  }
+}
