@@ -3,7 +3,7 @@ def clamp($lo; $hi): if . < $lo then $lo elif . > $hi then $hi else . end;
 def int: tostring | split(".") | .[0] | tonumber;
 .in as $i
 | ($i.maxIterations | num(3) | int | clamp(1; 6)) as $max
-| ($i.models // [] | if type == "array" then . else [] end) as $m
+| ($i.models // [] | if type == "array" then . else [] end | map(. + {transport: (.transport // "conductor")})) as $m
 | {topic: ($i.topic // "" | tostring | .[0:300]),
    goal: ($i.goal // $i.topic // "" | tostring | .[0:2000]),
    audience: ($i.audience // "a decision-maker who needs a sourced briefing" | tostring | .[0:200]),

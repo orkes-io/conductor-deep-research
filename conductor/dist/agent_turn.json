@@ -8,6 +8,7 @@
   "timeoutPolicy": "TIME_OUT_WF",
   "inputParameters": [
     "role",
+    "transport",
     "llmProvider",
     "model",
     "reasoningEffort",
@@ -26,31 +27,80 @@
       "inputParameters": {
         "user": "${workflow.input.user}",
         "context": "${workflow.input.context}",
-        "queryExpression": "{text: (.user + (if .context == null then \"\" else \"\\n\\nCONTEXT (JSON):\\n\" + (.context | tojson) end))}"
+        "system": "${workflow.input.system}",
+        "model": "${workflow.input.model}",
+        "webSearch": "${workflow.input.webSearch}",
+        "maxTokens": "${workflow.input.maxTokens}",
+        "reasoningEffort": "${workflow.input.reasoningEffort}",
+        "queryExpression": "(.user + (if .context == null then \"\" else \"\\n\\nCONTEXT (JSON):\\n\" + (.context | tojson) end)) as $text\n| {text: $text,\n   mistralBody: {model: .model, store: false, instructions: .system, inputs: $text,\n                 tools: (if .webSearch == true then [{type: \"web_search\"}] else [] end),\n                 completion_args: ({max_tokens: .maxTokens} + (if .reasoningEffort then {reasoning_effort: .reasoningEffort} else {} end))}}"
       }
     },
     {
-      "name": "deep_research_llm",
-      "taskReferenceName": "llm",
-      "type": "LLM_CHAT_COMPLETE",
+      "name": "route_call",
+      "taskReferenceName": "route",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "transport",
       "inputParameters": {
-        "llmProvider": "${workflow.input.llmProvider}",
-        "model": "${workflow.input.model}",
-        "reasoningEffort": "${workflow.input.reasoningEffort}",
-        "messages": [
+        "transport": "${workflow.input.transport}"
+      },
+      "decisionCases": {
+        "mistral_conversations": [
           {
-            "role": "system",
-            "message": "${workflow.input.system}"
+            "name": "deep_research_mistral",
+            "taskReferenceName": "mistral_call",
+            "type": "HTTP",
+            "inputParameters": {
+              "http_request": {
+                "uri": "https://api.mistral.ai/v1/conversations",
+                "method": "POST",
+                "accept": "application/json",
+                "contentType": "application/json",
+                "headers": {
+                  "Authorization": "Bearer ${workflow.secrets.mistral_api_key}"
+                },
+                "body": "${compose.output.result.mistralBody}",
+                "connectionTimeOut": 15000,
+                "readTimeOut": 600000
+              }
+            }
           },
           {
-            "role": "user",
-            "message": "${compose.output.result.text}"
+            "name": "parse_mistral",
+            "taskReferenceName": "mistral_parse",
+            "type": "JSON_JQ_TRANSFORM",
+            "inputParameters": {
+              "body": "${mistral_call.output.response.body}",
+              "queryExpression": "def arr: if type == \"array\" then . else [] end;\n(.body.outputs // [] | arr) as $o\n| [ $o[] | select(.type == \"message.output\") | .content ] as $contents\n| {text: ([ $contents[] | if type == \"string\" then . else ([ arr[] | select(.type == \"text\") | .text // \"\" ] | join(\"\")) end ] | join(\"\")),\n   refs: ([ $contents[] | arr[] | select(.type == \"tool_reference\") | .url | select(type == \"string\") ] | unique),\n   searches: ([ $o[] | select(.type == \"tool.execution\") ] | length),\n   finishReason: (if ($contents | length) > 0 then \"STOP\" else \"ERROR\" end),\n   usage: {promptTokens: .body.usage.prompt_tokens, completionTokens: .body.usage.completion_tokens,\n           totalTokens: .body.usage.total_tokens, searchTokens: .body.usage.connector_tokens}}"
+            }
           }
-        ],
-        "webSearch": "${workflow.input.webSearch}",
-        "jsonOutput": false,
-        "maxTokens": "${workflow.input.maxTokens}"
-      }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "deep_research_llm",
+          "taskReferenceName": "llm",
+          "type": "LLM_CHAT_COMPLETE",
+          "inputParameters": {
+            "llmProvider": "${workflow.input.llmProvider}",
+            "model": "${workflow.input.model}",
+            "reasoningEffort": "${workflow.input.reasoningEffort}",
+            "messages": [
+              {
+                "role": "system",
+                "message": "${workflow.input.system}"
+              },
+              {
+                "role": "user",
+                "message": "${compose.output.result.text}"
+              }
+            ],
+            "webSearch": "${workflow.input.webSearch}",
+            "jsonOutput": false,
+            "maxTokens": "${workflow.input.maxTokens}"
+          }
+        }
+      ]
     },
     {
       "name": "normalize_reply",
@@ -59,13 +109,14 @@
       "inputParameters": {
         "r": "${llm.output.result}",
         "finishReason": "${llm.output.finishReason}",
-        "expectJson": "${workflow.input.expectJson}",
         "usage": {
           "promptTokens": "${llm.output.promptTokens}",
           "completionTokens": "${llm.output.completionTokens}",
           "totalTokens": "${llm.output.tokenUsed}"
         },
-        "queryExpression": "def clean: gsub(\"[\\r\\n\\t]+\"; \" \") | sub(\"^[^{]*\"; \"\") | sub(\"[^}]*$\"; \"\");\n.r as $r\n| (if ($r | type) == \"object\" then $r\n   elif ($r | type) == \"string\" then (try ($r | clean | fromjson) catch null)\n   else null end) as $obj\n| (if ($r | type) == \"string\" then $r elif $r == null then \"\" else ($r | tojson) end) as $txt\n| ((.finishReason // \"\") | ascii_upcase) as $fr\n| {ok: (if .expectJson == true then (($obj | type) == \"object\") else (($txt | length) > 0) end),\n   data: (if .expectJson == true and ($obj | type) == \"object\" then $obj else null end),\n   text: (if .expectJson == true then $txt[0:3000] else $txt end),\n   truncated: ($fr == \"LENGTH\" or $fr == \"MAX_TOKENS\"),\n   finishReason: $fr,\n   usage: .usage}"
+        "mistral": "${mistral_parse.output.result}",
+        "expectJson": "${workflow.input.expectJson}",
+        "queryExpression": "def clean: gsub(\"[\\r\\n\\t]+\"; \" \") | sub(\"^[^{]*\"; \"\") | sub(\"[^}]*$\"; \"\");\n((.mistral | type) == \"object\") as $viaMistral\n| (if $viaMistral then .mistral.text else .r end) as $r\n| (if $viaMistral then .mistral.finishReason else .finishReason end) as $finish\n| (if $viaMistral then .mistral.usage + {searches: .mistral.searches} else .usage end) as $usage\n| (if ($r | type) == \"object\" then $r\n   elif ($r | type) == \"string\" then (try ($r | clean | fromjson) catch null)\n   else null end) as $obj\n| (if ($r | type) == \"string\" then $r elif $r == null then \"\" else ($r | tojson) end) as $txt\n| (($finish // \"\") | ascii_upcase) as $fr\n| {ok: (if .expectJson == true then (($obj | type) == \"object\") else (($txt | length) > 0) end),\n   data: (if .expectJson == true and ($obj | type) == \"object\" then $obj else null end),\n   text: (if .expectJson == true then $txt[0:3000] else $txt end),\n   truncated: ($fr == \"LENGTH\" or $fr == \"MAX_TOKENS\"),\n   finishReason: $fr,\n   usage: $usage}"
       }
     }
   ],

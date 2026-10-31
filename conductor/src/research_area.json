@@ -46,6 +46,7 @@
           "subWorkflowParam": {"name": "agent_turn", "version": 1},
           "inputParameters": {
             "role": "researcher",
+            "transport": "${workflow.input.researcher.transport}",
             "llmProvider": "${workflow.input.researcher.llmProvider}",
             "model": "${workflow.input.researcher.model}",
             "reasoningEffort": "${workflow.input.researcher.reasoningEffort}",
@@ -80,6 +81,7 @@
           "subWorkflowParam": {"name": "agent_turn", "version": 1},
           "inputParameters": {
             "role": "reviewer",
+            "transport": "${workflow.input.reviewer.transport}",
             "llmProvider": "${workflow.input.reviewer.llmProvider}",
             "model": "${workflow.input.reviewer.model}",
             "reasoningEffort": "${workflow.input.reviewer.reasoningEffort}",
@@ -131,6 +133,7 @@
       "subWorkflowParam": {"name": "agent_turn", "version": 1},
       "inputParameters": {
         "role": "writer",
+        "transport": "${workflow.input.researcher.transport}",
         "llmProvider": "${workflow.input.researcher.llmProvider}",
         "model": "${workflow.input.researcher.model}",
         "reasoningEffort": "${workflow.input.researcher.reasoningEffort}",

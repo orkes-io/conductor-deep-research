@@ -1,0 +1,12 @@
+{
+  "name": "deep_research_mistral",
+  "description": "Retry and timeout policy for the HTTP calls to Mistral's Conversations API (Mistral web search)",
+  "ownerEmail": "@include:owner",
+  "retryCount": 3,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 20,
+  "timeoutPolicy": "RETRY",
+  "timeoutSeconds": 900,
+  "responseTimeoutSeconds": 900,
+  "pollTimeoutSeconds": 3600
+}

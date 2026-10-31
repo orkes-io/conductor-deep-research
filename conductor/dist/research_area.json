@@ -78,6 +78,7 @@
           },
           "inputParameters": {
             "role": "researcher",
+            "transport": "${workflow.input.researcher.transport}",
             "llmProvider": "${workflow.input.researcher.llmProvider}",
             "model": "${workflow.input.researcher.model}",
             "reasoningEffort": "${workflow.input.researcher.reasoningEffort}",
@@ -115,6 +116,7 @@
           },
           "inputParameters": {
             "role": "reviewer",
+            "transport": "${workflow.input.reviewer.transport}",
             "llmProvider": "${workflow.input.reviewer.llmProvider}",
             "model": "${workflow.input.reviewer.model}",
             "reasoningEffort": "${workflow.input.reviewer.reasoningEffort}",
@@ -169,6 +171,7 @@
       },
       "inputParameters": {
         "role": "writer",
+        "transport": "${workflow.input.researcher.transport}",
         "llmProvider": "${workflow.input.researcher.llmProvider}",
         "model": "${workflow.input.researcher.model}",
         "reasoningEffort": "${workflow.input.researcher.reasoningEffort}",

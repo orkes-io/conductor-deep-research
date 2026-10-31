@@ -9,16 +9,22 @@ A deep research system built from [Conductor](https://github.com/conductor-oss/c
 
 A small React app starts runs, shows each agent's progress and claims, lists past runs, and downloads the PDF.
 
-It uses OpenAI, Anthropic and Google Gemini models through Conductor's built-in `LLM_CHAT_COMPLETE` task with provider web search (`webSearch: true`). The orchestration is all built-in system tasks: `FORK_JOIN_DYNAMIC`, `DO_WHILE`, `SUB_WORKFLOW`, `JSON_JQ_TRANSFORM`, `SET_VARIABLE` and `SWITCH`. The only code you run is the UI server, which also hosts one worker that renders the PDF.
+It uses OpenAI, Anthropic and Mistral models, and every model call searches the web.
+
+- OpenAI and Anthropic models run through Conductor's built-in `LLM_CHAT_COMPLETE` task with provider web search (`webSearch: true`). Google Gemini works the same way if you'd rather use it.
+- Mistral models run through an `HTTP` task that calls Mistral's [Conversations API](https://docs.mistral.ai/studio/agents/agent-tools/websearch) with its `web_search` connector, because the built-in task's web search covers only OpenAI, Anthropic and Gemini.
+
+The orchestration is all built-in system tasks: `FORK_JOIN_DYNAMIC`, `DO_WHILE`, `SUB_WORKFLOW`, `SWITCH`, `JSON_JQ_TRANSFORM` and `SET_VARIABLE`. The only code you run is the UI server, which also hosts one worker that renders the PDF.
 
 ## Prerequisites
 
 - An [Orkes Developer Edition](https://developer.orkescloud.com) account (free), or any Orkes Conductor cluster
 - An application with an access key: **Access Control > Applications > Create application**, then **Create access key**
-- AI integrations, each with at least one model registered and your application granted access. Two providers are enough, because every reviewer only has to be a different provider than its researcher.
-  - **OpenAI** (API key)
-  - **Anthropic Claude** (API key, endpoint `https://api.anthropic.com/v1`)
-  - **Google Gemini AI** (GCP project ID, location and a service account JSON with the Agent Platform API enabled)
+- Access to at least two providers, because every reviewer has to be a different provider than its researcher:
+  - **OpenAI**: an integration with your API key and a model registered under it
+  - **Anthropic Claude**: an integration with your API key (endpoint `https://api.anthropic.com/v1`) and a model registered under it
+  - **Mistral**: a secret named `mistral_api_key` under **Secrets** that holds your Mistral API key
+- Your application needs access to each integration's models and to the secret.
 - Node.js 20.6 or later
 
 ## Run it
@@ -36,13 +42,18 @@ Edit `models.json` so each entry matches an integration name and a model registe
 [
   {"kind": "openai", "llmProvider": "openai", "model": "gpt-6.1-sol", "reasoningEffort": "low", "label": "GPT-6.1 Sol"},
   {"kind": "anthropic", "llmProvider": "anthropic", "model": "claude-sonnet-5", "label": "Claude Sonnet 5"},
-  {"kind": "gemini", "llmProvider": "gemini", "model": "gemini-3-pro", "label": "Gemini 3 Pro"}
+  {"kind": "mistral", "transport": "mistral_conversations", "model": "mistral-large-2512", "label": "Mistral Large 3"}
 ]
 ```
 
-`kind` groups models by provider, so the fan-out never pairs a researcher with a reviewer of the same kind. `llmProvider` is the integration's name in Conductor, not the provider type.
+- `kind` groups models by provider, so the fan-out never pairs a researcher with a reviewer of the same kind.
+- `llmProvider` is the integration's name in Conductor, not the provider type.
+- `transport: "mistral_conversations"` sends that model's calls through the Mistral route instead of the built-in LLM task.
+- To use your own integration names without editing the tracked file, copy it to `models.local.json` (gitignored), which the server reads first.
 
-Register the task definitions and workflows, then start the UI:
+As of October 30, 2026, Mistral's API rejects web search for `mistral-large-4` ("currently does not support builtin connectors"), so the default Mistral model is Mistral Large 3. `mistral-medium-latest` also supports web search.
+
+Register the task definitions and workflows, then start the UI. If your Mistral secret has a different name, set `MISTRAL_SECRET_NAME` in `.env` first.
 
 ```bash
 npm run register
@@ -70,7 +81,7 @@ Without the UI server running, the run waits at the PDF step for up to an hour, 
 |---|---|
 | `deep_research` | Plans the areas, fans out one `research_area` per area with `FORK_JOIN_DYNAMIC`, collects the results, has an editor write the summary, assembles the report and renders the PDF |
 | `research_area` | One research agent. A `DO_WHILE` runs rounds of research and adversarial review and keeps a claim ledger in workflow variables. It stops when the reviewer is satisfied or the round cap is reached, then writes the area's section |
-| `agent_turn` | One LLM call: builds the prompt, calls `LLM_CHAT_COMPLETE` and parses the JSON reply |
+| `agent_turn` | One LLM call: builds the prompt, calls `LLM_CHAT_COMPLETE` (or Mistral's Conversations API through `HTTP`) and parses the JSON reply |
 
 Each LLM call runs as its own small `agent_turn` workflow instead of sitting directly inside the `DO_WHILE`. Inside a loop, Conductor appends an LLM task's replies from earlier iterations to its next call's messages, and each turn here should only see the context it's given.
 
@@ -85,7 +96,9 @@ The source is split so it's easy to read and edit:
 
 ## Scaling and cost
 
-The UI allows 1 to 30 research areas per run. A run makes about `2 + areas × (2 × rounds + 1)` LLM calls, and `2 × areas × rounds` of them use web search. Provider rate limits are usually the first thing you hit with wide runs. Every LLM task retries with exponential backoff, and one failed area doesn't fail the run: the report lists it under "Areas that did not complete".
+The UI allows 1 to 30 research areas per run. A run makes about `2 + areas × (2 × rounds + 1)` LLM calls, and `2 × areas × rounds` of them use web search.
+
+Provider rate limits are the first thing you hit with wide runs. In a 20-researcher test run, 3 of 138 model calls still hit Mistral's token or web search rate limits after three retries with backoff. Those turns count as failed, and the next round continues. Every model task retries with exponential backoff (see `conductor/taskdefs/`). One failed area doesn't fail the run, and the report lists it under "Areas that did not complete" with the reason.
 
 ## Notes
 

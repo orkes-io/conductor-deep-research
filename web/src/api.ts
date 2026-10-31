@@ -50,7 +50,7 @@ export interface RunDetail {
   reason?: string;
   url: string;
   areas: Area[];
-  missing: { title: string }[];
+  missing: { title: string; reason: string }[];
   hasReport: boolean;
   pdfReady: boolean;
 }

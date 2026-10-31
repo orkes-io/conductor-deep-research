@@ -78,17 +78,25 @@ export default function RunDetail({ id }: { id: string }) {
                   <span className="bad">{a.progress?.refuted ?? 0}</span>
                 </td>
                 <td>
-                  <Status value={a.status} /> {a.progress?.status && a.status === "COMPLETED" ? <span className="hint">{a.progress.status}</span> : null}
+                  {a.status === "COMPLETED" && a.progress?.status ? <Outcome value={a.progress.status} /> : <Status value={a.status} />}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      {run.missing?.length > 0 && <p className="error">Didn't complete: {run.missing.map((m) => m.title).join("; ")}</p>}
+      {run.missing?.length > 0 && (
+        <p className="error">Didn't complete: {run.missing.map((m) => `${m.title} (${m.reason})`).join("; ")}</p>
+      )}
       {open && <ClaimsDrawer runId={id} area={open} onClose={() => setOpen(null)} />}
     </div>
   );
+}
+
+// How a finished researcher came out: verified, partially verified, or a reason it produced nothing usable.
+function Outcome({ value }: { value: string }) {
+  const tone = value === "verified" ? "s-completed" : value === "partially verified" ? "s-completed_with_errors" : "s-failed";
+  return <span className={`status ${tone}`}>{value}</span>;
 }
 
 function Rounds({ p }: { p: Area["progress"] }) {

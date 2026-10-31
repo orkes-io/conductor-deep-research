@@ -5,16 +5,21 @@ import { join } from "node:path";
 import { OrkesClients } from "@io-orkes/conductor-javascript";
 
 const DIST = join(import.meta.dirname, "..", "conductor", "dist");
-const load = (file: string) => JSON.parse(readFileSync(join(DIST, file), "utf8"));
+// The workflows read the Mistral key from a Conductor secret named mistral_api_key.
+// Set MISTRAL_SECRET_NAME in .env if your secret has a different name.
+const SECRET = process.env.MISTRAL_SECRET_NAME || "mistral_api_key";
+const load = (file: string) =>
+  JSON.parse(readFileSync(join(DIST, file), "utf8").replaceAll("workflow.secrets.mistral_api_key", `workflow.secrets.${SECRET}`));
 
 const clients = await OrkesClients.from();
 const metadata = clients.getMetadataClient();
 
 await metadata.registerTasks([
   load("taskdef.deep_research_llm.json"),
+  load("taskdef.deep_research_mistral.json"),
   load("taskdef.deep_research_render_pdf.json"),
 ]);
-console.log("registered task definitions deep_research_llm, deep_research_render_pdf");
+console.log("registered task definitions deep_research_llm, deep_research_mistral, deep_research_render_pdf");
 
 // Children first, so each parent references a workflow that already exists.
 for (const name of ["agent_turn", "research_area", "deep_research"]) {

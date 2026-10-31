@@ -6,7 +6,7 @@
   "ownerEmail": "@include:owner",
   "timeoutSeconds": 1800,
   "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["role", "llmProvider", "model", "reasoningEffort", "system", "user", "context", "webSearch", "expectJson", "maxTokens"],
+  "inputParameters": ["role", "transport", "llmProvider", "model", "reasoningEffort", "system", "user", "context", "webSearch", "expectJson", "maxTokens"],
   "tasks": [
     {
       "name": "compose_prompt",
@@ -15,25 +15,70 @@
       "inputParameters": {
         "user": "${workflow.input.user}",
         "context": "${workflow.input.context}",
+        "system": "${workflow.input.system}",
+        "model": "${workflow.input.model}",
+        "webSearch": "${workflow.input.webSearch}",
+        "maxTokens": "${workflow.input.maxTokens}",
+        "reasoningEffort": "${workflow.input.reasoningEffort}",
         "queryExpression": "@include:jq/compose.jq"
       }
     },
     {
-      "name": "deep_research_llm",
-      "taskReferenceName": "llm",
-      "type": "LLM_CHAT_COMPLETE",
-      "inputParameters": {
-        "llmProvider": "${workflow.input.llmProvider}",
-        "model": "${workflow.input.model}",
-        "reasoningEffort": "${workflow.input.reasoningEffort}",
-        "messages": [
-          {"role": "system", "message": "${workflow.input.system}"},
-          {"role": "user", "message": "${compose.output.result.text}"}
-        ],
-        "webSearch": "${workflow.input.webSearch}",
-        "jsonOutput": false,
-        "maxTokens": "${workflow.input.maxTokens}"
-      }
+      "name": "route_call",
+      "taskReferenceName": "route",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "transport",
+      "inputParameters": {"transport": "${workflow.input.transport}"},
+      "decisionCases": {
+        "mistral_conversations": [
+          {
+            "name": "deep_research_mistral",
+            "taskReferenceName": "mistral_call",
+            "type": "HTTP",
+            "inputParameters": {
+              "http_request": {
+                "uri": "https://api.mistral.ai/v1/conversations",
+                "method": "POST",
+                "accept": "application/json",
+                "contentType": "application/json",
+                "headers": {"Authorization": "Bearer ${workflow.secrets.mistral_api_key}"},
+                "body": "${compose.output.result.mistralBody}",
+                "connectionTimeOut": 15000,
+                "readTimeOut": 600000
+              }
+            }
+          },
+          {
+            "name": "parse_mistral",
+            "taskReferenceName": "mistral_parse",
+            "type": "JSON_JQ_TRANSFORM",
+            "inputParameters": {
+              "body": "${mistral_call.output.response.body}",
+              "queryExpression": "@include:jq/mistral_parse.jq"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "deep_research_llm",
+          "taskReferenceName": "llm",
+          "type": "LLM_CHAT_COMPLETE",
+          "inputParameters": {
+            "llmProvider": "${workflow.input.llmProvider}",
+            "model": "${workflow.input.model}",
+            "reasoningEffort": "${workflow.input.reasoningEffort}",
+            "messages": [
+              {"role": "system", "message": "${workflow.input.system}"},
+              {"role": "user", "message": "${compose.output.result.text}"}
+            ],
+            "webSearch": "${workflow.input.webSearch}",
+            "jsonOutput": false,
+            "maxTokens": "${workflow.input.maxTokens}"
+          }
+        }
+      ]
     },
     {
       "name": "normalize_reply",
@@ -42,12 +87,13 @@
       "inputParameters": {
         "r": "${llm.output.result}",
         "finishReason": "${llm.output.finishReason}",
-        "expectJson": "${workflow.input.expectJson}",
         "usage": {
           "promptTokens": "${llm.output.promptTokens}",
           "completionTokens": "${llm.output.completionTokens}",
           "totalTokens": "${llm.output.tokenUsed}"
         },
+        "mistral": "${mistral_parse.output.result}",
+        "expectJson": "${workflow.input.expectJson}",
         "queryExpression": "@include:jq/normalize.jq"
       }
     }

@@ -7,3 +7,4 @@ reports/
 .browser-profile/
 screenshots/
 *.log
+models.local.json
