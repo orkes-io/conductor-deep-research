@@ -18,12 +18,12 @@ The orchestration is all built-in system tasks: `FORK_JOIN_DYNAMIC`, `DO_WHILE`,
 
 ## Prerequisites
 
-- An [Orkes Developer Edition](https://developer.orkescloud.com) account (free), or any Orkes Conductor cluster
+- A free [Orkes Developer Edition](https://developer.orkescloud.com) account, the hosted Conductor service from Orkes
 - An application with an access key: **Access Control > Applications > Create application**, then **Create access key**
 - Access to at least two providers, because every reviewer has to be a different provider than its researcher:
-  - **OpenAI**: an integration with your API key and a model registered under it
-  - **Anthropic Claude**: an integration with your API key (endpoint `https://api.anthropic.com/v1`) and a model registered under it
-  - **Mistral**: a secret named `mistral_api_key` under **Secrets** that holds your Mistral API key
+  - **OpenAI**: an OpenAI integration under **Integrations > Connections and Resources** with your API key, and a model added under it
+  - **Anthropic Claude**: an Anthropic Claude integration with your API key (endpoint `https://api.anthropic.com/v1`), and a model added under it
+  - **Mistral**: a secret named `mistral_api_key` under **Definitions > Secrets** that holds your Mistral API key
 - Your application needs access to each integration's models and to the secret.
 - Node.js 20.6 or later
 
@@ -36,7 +36,7 @@ npm install
 cp .env.example .env    # then fill in your server URL, key and secret
 ```
 
-Edit `models.json` so each entry matches an integration name and a model registered under it in your cluster:
+Edit `models.json` so each entry matches an integration name in Developer Edition and a model added under it:
 
 ```json
 [
@@ -47,7 +47,7 @@ Edit `models.json` so each entry matches an integration name and a model registe
 ```
 
 - `kind` groups models by provider, so the fan-out never pairs a researcher with a reviewer of the same kind.
-- `llmProvider` is the integration's name in Conductor, not the provider type.
+- `llmProvider` is the integration's name in Developer Edition, not the provider type.
 - `transport: "mistral_conversations"` sends that model's calls through the Mistral route instead of the built-in LLM task.
 - To use your own integration names without editing the tracked file, copy it to `models.local.json` (gitignored), which the server reads first.
 
@@ -83,7 +83,7 @@ Without the UI server running, the run waits at the PDF step for up to an hour, 
 | `research_area` | One research agent. A `DO_WHILE` runs rounds of research and adversarial review and keeps a claim ledger in workflow variables. It stops when the reviewer is satisfied or the round cap is reached, then writes the area's section |
 | `agent_turn` | One LLM call: builds the prompt, calls `LLM_CHAT_COMPLETE` (or Mistral's Conversations API through `HTTP`) and parses the JSON reply |
 
-Each LLM call runs as its own small `agent_turn` workflow instead of sitting directly inside the `DO_WHILE`. Inside a loop, Conductor appends an LLM task's replies from earlier iterations to its next call's messages, and each turn here should only see the context it's given.
+Each LLM call runs as its own small `agent_turn` workflow instead of sitting directly inside the `DO_WHILE`. Inside a loop, Conductor can add an LLM task's replies from earlier iterations to its next call's messages. We saw this on Developer Edition with GPT-6.1 Sol, and each turn here should only see the context it's given.
 
 The source is split so it's easy to read and edit:
 
@@ -102,6 +102,6 @@ Provider rate limits are the first thing you hit with wide runs. In a 20-researc
 
 ## Notes
 
-- **PDF:** Conductor's built-in `GENERATE_PDF` task saves the file where the server runs. On Orkes Developer Edition that is the server's own disk unless you give it an S3 or GCS bucket integration, so this project renders the PDF in a worker (`server/pdf.ts`) next to the UI instead.
-- **Credentials:** your Conductor key and secret stay in the server's `.env`. The browser only talks to the local server, which listens on 127.0.0.1.
+- **PDF:** on Orkes Developer Edition, Conductor's built-in `GENERATE_PDF` task saves the PDF on the Conductor server's local disk, where this app can't reach it. Saving it somewhere readable takes an S3 or Google Cloud Storage bucket and a matching cloud integration, so this project renders the PDF in a worker (`server/pdf.ts`) next to the UI instead.
+- **Credentials:** your Conductor access key and secret stay in the server's `.env`. The browser only talks to the local server, which listens on 127.0.0.1.
 - **Web content:** the PDF renderer runs with JavaScript off and no network access, because the report contains text from web pages.
